@@ -34,7 +34,7 @@ $uri = 'https://{0}/gras-api/v2/mgmt/tokenassignment' -f $serverHOST
 # Build API authentication headers
 $headers = @{
     'Authorization' = 'Basic ' + [Convert]::ToBase64String(
-        [Text.Encoding]::ASCII.GetBytes('<credentials>')
+        [Text.Encoding]::ASCII.GetBytes('<apiuser:apipassword>')
     )
     'Content-Type' = 'application/json'
 }
