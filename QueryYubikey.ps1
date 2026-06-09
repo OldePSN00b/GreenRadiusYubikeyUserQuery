@@ -9,7 +9,7 @@
     assignment after confirmation.
 
 .NOTES
-    Author: ~~Jarett LeBlang~~ ChatGPT
+    Author: Jarett LeBlang but mostly just ChatGPT
     Requires: GreenRADIUS Management API access
 #>
 
