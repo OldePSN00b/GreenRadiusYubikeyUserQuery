@@ -3,10 +3,18 @@
     Lookup and optionally unassign a YubiKey from a user in GreenRADIUS.
 
 .DESCRIPTION
-    This script accepts either a full YubiKey OTP or a 12-character
-    YubiKey public ID, searches GreenRADIUS for the assigned user,
-    displays assignment details, and optionally removes the token
-    assignment after confirmation.
+    This script can look up a YubiKey assignment using either:
+
+        1. A full YubiKey OTP / YubiKey press / 12-character public ID
+        2. The decimal serial number printed on the back of the YubiKey
+
+    Option 1 preserves the original working behavior:
+        - Accept OTP or public ID
+        - Trim to first 12 characters
+        - Search GreenRADIUS directly
+
+    Option 2 converts:
+        Decimal Serial -> Hexadecimal -> ModHex
 
 .NOTES
     Author: Jarett LeBlang but mostly just ChatGPT
@@ -14,19 +22,76 @@
 #>
 
 # GreenRADIUS server hostname
-$serverHOST = '<server>'
+$serverHOST = '<GreenRADIUS server FQDN or IP>'
 
-# Prompt for a YubiKey OTP or Public ID
-$keyToFind = Read-Host "Enter YubiKey OTP or first 12-character public ID"
-$keyToFind = $keyToFind.Trim()
+Write-Output "Choose lookup method:"
+Write-Output "1. YubiKey press / full OTP / first 12-character public ID"
+Write-Output "2. Decimal serial number from back of YubiKey"
+Write-Output ""
 
-# If a full OTP was provided, extract the first 12 characters
-# which represent the YubiKey public ID used by GreenRADIUS.
-if ($keyToFind.Length -gt 12) {
-    $keyToFind = $keyToFind.Substring(0, 12)
+$lookupMode = Read-Host "Enter 1 or 2"
+
+$keyToFind = $null
+
+if ($lookupMode -eq '1') {
+
+    # Original working YubiKey OTP / public ID behavior
+    $keyToFind = Read-Host "Enter YubiKey OTP or first 12-character public ID"
+    $keyToFind = $keyToFind.Trim()
+
+    if ($keyToFind.Length -gt 12) {
+        $keyToFind = $keyToFind.Substring(0, 12)
+    }
+
+    Write-Output ("Searching token/public ID: {0}" -f $keyToFind)
 }
+elseif ($lookupMode -eq '2') {
 
-Write-Output ("Searching token/public ID: {0}" -f $keyToFind)
+    $serialNumber = Read-Host "Enter decimal serial number from back of YubiKey"
+    $serialNumber = $serialNumber.Trim()
+
+    if ($serialNumber -notmatch '^\d+$') {
+        Write-Output "Invalid serial number. Decimal serial numbers should contain digits only."
+        return
+    }
+
+    $decimalSerial = [UInt64]$serialNumber
+    $hexSerial = '{0:x}' -f $decimalSerial
+
+    $modhexMap = @{
+        '0' = 'c'
+        '1' = 'b'
+        '2' = 'd'
+        '3' = 'e'
+        '4' = 'f'
+        '5' = 'g'
+        '6' = 'h'
+        '7' = 'i'
+        '8' = 'j'
+        '9' = 'k'
+        'a' = 'l'
+        'b' = 'n'
+        'c' = 'r'
+        'd' = 't'
+        'e' = 'u'
+        'f' = 'v'
+    }
+
+    $modhexSerial = -join ($hexSerial.ToCharArray() | ForEach-Object {
+            $modhexMap[[string]$_]
+        })
+
+    $keyToFind = $modhexSerial.PadLeft(12, 'c')
+
+    Write-Output ("Decimal Serial : {0}" -f $decimalSerial)
+    Write-Output ("Hex Serial     : {0}" -f $hexSerial)
+    Write-Output ("ModHex Serial  : {0}" -f $modhexSerial)
+    Write-Output ("Searching token/public ID: {0}" -f $keyToFind)
+}
+else {
+    Write-Output "Invalid selection. Exiting."
+    return
+}
 
 # GreenRADIUS API endpoint used to lookup token assignments
 $uri = 'https://{0}/gras-api/v2/mgmt/tokenassignment' -f $serverHOST
@@ -34,9 +99,9 @@ $uri = 'https://{0}/gras-api/v2/mgmt/tokenassignment' -f $serverHOST
 # Build API authentication headers
 $headers = @{
     'Authorization' = 'Basic ' + [Convert]::ToBase64String(
-        [Text.Encoding]::ASCII.GetBytes('<apiuser:apipassword>')
+        [Text.Encoding]::ASCII.GetBytes('<APIUser:APIPassword>')
     )
-    'Content-Type' = 'application/json'
+    'Content-Type'  = 'application/json'
 }
 
 # API expects token IDs as an array
@@ -73,7 +138,7 @@ try {
     foreach ($tokenProperty in $records.PSObject.Properties) {
 
         $tokenId = $tokenProperty.Name
-        $token   = $tokenProperty.Value
+        $token = $tokenProperty.Value
 
         Write-Output ("Token ID: {0}" -f $tokenId)
         Write-Output ("Token Type: {0}" -f $token.token_type)
@@ -111,10 +176,25 @@ try {
     }
 
     # Safety confirmation before deleting assignments
+    # First confirmation - require explicit DELETE
     $deleteConfirm = Read-Host `
-        "Type Yes to delete/unassign this YubiKey from the mapped user(s)"
+        "Type DELETE to unassign this YubiKey from the mapped user(s)"
 
-    if ($deleteConfirm -eq 'Yes') {
+    if ($deleteConfirm -ceq 'DELETE') {
+
+        Write-Output ""
+        Write-Output "WARNING: This will remove the YubiKey assignment(s) listed above."
+        Write-Output ""
+
+        # Second confirmation
+        $finalConfirm = Read-Host "Are you absolutely sure? (Y/N)"
+
+        if ($finalConfirm -notmatch '^(Y|y)$') {
+            Write-Output "Delete cancelled."
+            return
+        }
+
+        # Continue with deletion...
 
         # GreenRADIUS API endpoint for removing assignments
         $deleteUri = 'https://{0}/gras-api/v2/mgmt/mappings' -f $serverHOST
@@ -147,7 +227,7 @@ try {
             foreach ($mappedUser in $mappedUsers) {
 
                 $logLine = "{0} | Token: {1} | User: {2} | Removed By: {3}" -f `
-                    (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), `
+                (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), `
                     $keyToFind, `
                     $mappedUser, `
                     $env:USERNAME
@@ -173,7 +253,7 @@ try {
         }
     }
     else {
-        Write-Output "Delete skipped."
+        Write-Output "DELETE was not entered. Operation cancelled."
     }
 }
 catch {
